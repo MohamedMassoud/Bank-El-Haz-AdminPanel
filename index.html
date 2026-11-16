@@ -357,12 +357,30 @@ function propsHtml(r,cfg){const O=r.O||{};const keys=Object.keys(O).map(Number).
  return '<div class="props">'+keys.map(k=>{const o=O[k],own=arr(r.P)[o];const nm=(cfg&&cfg.S&&cfg.S[k])?cfg.S[k][0]:('#'+k);const mgd=!!(r.M&&r.M[k]);const hs=(r.H&&r.H[k])||0;return '<span class="pchip'+(mgd?' mg':'')+'" title="'+esc((own?own.n:'?')+(mgd?' · 🔒 mortgaged':'')+(hs?' · '+hs+' houses':''))+'">'+esc(nm)+' · '+esc(own?ini(own.n):'?')+(hs?(hs>=5?' 🏨':' 🏠'+hs):'')+'</span>';}).join('')+'</div>';}
 function logHtml(r,cfg){const log=arr(r.log);if(!log.length)return '<div class="dz">No activity yet.</div>';return '<ul class="log">'+log.map((e,i)=>'<li><span class="i">#'+(log.length-i)+'</span><span>'+fmtLog(e,cfg)+'</span></li>').join('')+'</ul>';}
 // ===================== mutations =====================
-async function mutate(code,fn,msg){try{const cur=await dbGet('rooms/'+code);if(!cur){toast('⚠️ Room '+code+' no longer exists','err');return false;}const d=norm(JSON.parse(JSON.stringify(cur)));if(fn(d)===false)return false;d.v=(cur.v||0)+1;await dbSet('rooms/'+code,d);state.rooms[code]=d;state.lastSeen[code]=Date.now();lastPollV[code]=d.v;state.sig=sigOf(state.rooms,state.presence);render();if(msg!==false)toast(msg||('✅ Saved to '+code));return true;}catch(e){toast('⚠️ '+(e.message||e),'err');return false;}}
+function turnMs(d){try{const c=JSON.parse(d.cfg||'{}');return 1000*((c.P&&c.P.turnSeconds)||30)}catch(e){return 30000}}
+async function mutate(code,fn,msg){try{const cur=await dbGet('rooms/'+code);if(!cur){toast('⚠️ Room '+code+' no longer exists','err');return false;}const d=norm(JSON.parse(JSON.stringify(cur)));if(fn(d)===false)return false;const ctx=r=>[r&&r.st,r&&r.t,r&&r.ph,!!(r&&r.au),!!(r&&r.tr)].join('|');if(ctx(cur)!==ctx(d)&&d.st&&d.w==null){d.dl=Date.now()+turnMs(d);d.dk='';}d.v=(cur.v||0)+1;await dbSet('rooms/'+code,d);state.rooms[code]=d;state.lastSeen[code]=Date.now();lastPollV[code]=d.v;state.sig=sigOf(state.rooms,state.presence);render();if(msg!==false)toast(msg||('✅ Saved to '+code));return true;}catch(e){toast('⚠️ '+(e.message||e),'err');return false;}}
 async function doRestart(code){const ok=await askConfirm({icon:'🔄',title:'Restart room '+code+'?',html:'Resets the board, cash & positions and sends everyone back to the <b>lobby</b>. Players stay. This cannot be undone.',yes:'Restart',danger:true});if(!ok)return;
  await mutate(code,d=>{let cfg=null;try{cfg=JSON.parse(d.cfg||'null')}catch(e){}const start=(cfg&&cfg.P&&cfg.P.startCash)||1500;d.P=arr(d.P).map(p=>Object.assign({},p,{pos:0,m:start,jail:0,out:false}));d.O={};d.H={};d.M={};d.V={};d.st=0;d.t=0;d.ph='roll';d.d=[1,1];d.w=null;d.again=false;d.au=null;d.tr=null;d.rc=0;d.ro=null;d.log=[];d.dl=0;d.dk='';},'🔄 '+code+' restarted to lobby');}
 async function doDelete(code){const ok=await askConfirm({icon:'🗑️',title:'Delete room '+code+'?',html:'Permanently removes this room and its presence data. Players in it will be disconnected.',yes:'Delete',danger:true});if(!ok)return;
  try{await dbRemove('rooms/'+code);try{await dbRemove('presence/'+code)}catch(e){}delete state.rooms[code];delete state.presence[code];if(state.current===code){state.current=null;const ov=document.getElementById('overlay');ov.classList.remove('show');ov.innerHTML='';}state.sig=sigOf(state.rooms,state.presence);render();toast('🗑️ Room '+code+' deleted');}catch(e){toast('⚠️ '+(e.message||e),'err');}}
-async function doKick(code,i,name){const ok=await askConfirm({icon:'👢',title:'Kick '+name+'?',html:'Removes this player from the room. This cannot be undone.',yes:'Kick',danger:true});if(!ok)return;await mutate(code,d=>{if(d.P[i])d.P.splice(i,1);else return false;},'👢 '+name+' kicked');}
+async function doKick(code,i,name){const ok=await askConfirm({icon:'👢',title:'Kick '+name+'?',html:'Removes this player from the room. This cannot be undone.',yes:'Kick',danger:true});if(!ok)return;await mutate(code,d=>{
+ const P=arr(d.P);if(P.length<=1||!P[i])return false;
+ if(!d.st){P.splice(i,1);d.P=P;d.log=[['kicked',name],...arr(d.log)].slice(0,5);return;}
+ if(d.ph==='ro')return false;
+ const wasTurn=d.t===i,hadAuc=!!d.au;
+ if(d.tr){const t=d.tr;if(t.from===i||t.to===i)d.tr=null;else{if(t.from>i)t.from--;if(t.to>i)t.to--}}
+ d.au=null;
+ const O=d.O||{};for(const k in O){const o=O[k];
+  if(o===i){if(d.V)delete d.V[k];if(d.H)delete d.H[k];if(d.M)delete d.M[k];delete O[k]}
+  else if(o>i)O[k]=o-1}
+ P.splice(i,1);d.P=P;
+ if(d.w!=null){if(d.w>i)d.w--;else if(d.w===i)d.w=null}
+ if(d.t>i)d.t--;else if(d.t>=d.P.length)d.t=0;
+ if(wasTurn||hadAuc){d.ph='roll';d.again=false}
+ if(d.w==null&&d.P[d.t]&&d.P[d.t].out){d.again=false;d.ph='roll';for(let g=0;g<30;g++){d.t=(d.t+1)%d.P.length;const q=d.P[d.t];if(!q)break;if(q.out)continue;if(q.sk>0){q.sk--;continue}break}}
+ if(d.w==null){const alive=d.P.filter(x=>!x.out);if(alive.length===1)d.w=d.P.indexOf(alive[0])}
+ d.log=[['kicked',name],...arr(d.log)].slice(0,5);
+},'👢 '+name+' kicked');}
 async function addBot(code){await mutate(code,d=>{const P=arr(d.P);if(P.length>=6){toast('⚠️ Room is full (6 players max)','warn');return false;}let start=1500;try{start=(JSON.parse(d.cfg||'{}').P||{}).startCash||1500}catch(e){}const used=P.map(p=>p.c);let c=0;while(c<6&&used.includes(c))c++;const n=P.filter(p=>p.bot).length+1;P.push({id:'bot'+Date.now()%100000+P.length,n:'🤖 Bot '+n,c:c%6,pos:0,m:start,jail:0,out:false,bot:true});d.P=P;},'🤖 Bot added to '+code);}
 // ===================== room tools =====================
 function gameURL(code){let base;try{base=new URL('../index.html',location.href).href.split('#')[0];}catch(e){base=location.href.split('#')[0];}return base+'#'+code;}
